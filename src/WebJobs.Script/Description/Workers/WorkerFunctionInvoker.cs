@@ -5,6 +5,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Reactive.Linq;
@@ -122,13 +123,25 @@ namespace Microsoft.Azure.WebJobs.Script.Description
             }
         }
 
+        private void Log(string tag, DateTime start, DateTime end)
+        {
+            string startLog = start.ToString("yyyy-MM-dd HH:mm:ss.fff", CultureInfo.InvariantCulture);
+            string endLog = end.ToString("yyyy-MM-dd HH:mm:ss.fff", CultureInfo.InvariantCulture);
+            double elapsedMs = (end - start).TotalMilliseconds;
+            Console.WriteLine($"{tag},{startLog},{endLog},{elapsedMs}");
+        }
+
         private async Task<(string name, DataType type, object value)[]> BindInputsAsync(Binder binder)
         {
+            DateTime globalStart = DateTime.UtcNow;
+
             var bindingTasks = _inputBindings
                 .AsParallel()
                 .Where(binding => !binding.Metadata.IsTrigger)
                 .Select(async (binding) =>
                 {
+                    DateTime taskStart = DateTime.UtcNow;
+
                     BindingContext bindingContext = new BindingContext
                     {
                         Binder = binder,
@@ -138,10 +151,19 @@ namespace Microsoft.Azure.WebJobs.Script.Description
                     };
 
                     await binding.BindAsync(bindingContext).ConfigureAwait(false);
+
+                    DateTime taskEnd = DateTime.UtcNow;
+                    Log(binding.Metadata.Name, taskStart, taskEnd);
+
                     return (binding.Metadata.Name, bindingContext.DataType, bindingContext.Value);
                 });
 
-            return await Task.WhenAll(bindingTasks);
+            var ret = await Task.WhenAll(bindingTasks);
+
+            DateTime globalEnd = DateTime.UtcNow;
+            Log("AllInputs", globalStart, globalEnd);
+
+            return ret;
         }
 
         private async Task BindOutputsAsync(object input, Binder binder, ScriptInvocationResult result)
@@ -153,8 +175,12 @@ namespace Microsoft.Azure.WebJobs.Script.Description
 
             _handleScriptReturnValue(result);
 
+            DateTime globalStart = DateTime.UtcNow;
+
             var outputBindingTasks = _outputBindings.AsParallel().Select(async binding =>
             {
+                DateTime taskStart = DateTime.UtcNow;
+
                 // apply the value to the binding
                 if (result.Outputs.TryGetValue(binding.Metadata.Name, out object value) && value != null)
                 {
@@ -166,10 +192,16 @@ namespace Microsoft.Azure.WebJobs.Script.Description
                         Value = value
                     };
                     await binding.BindAsync(bindingContext).ConfigureAwait(false);
+
+                    DateTime taskEnd = DateTime.UtcNow;
+                    Log(binding.Metadata.Name, taskStart, taskEnd);
                 }
             });
 
             await Task.WhenAll(outputBindingTasks);
+
+            DateTime globalEnd = DateTime.UtcNow;
+            Log("AllOutputs", globalStart, globalEnd);
         }
 
         private object TransformInput(object input, Dictionary<string, object> bindingData)
